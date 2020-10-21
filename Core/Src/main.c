@@ -55,7 +55,7 @@
 #define _end_  "\033[0m"
 #define DEBUG_HEADER    _end_ "[" _yel_ "%22.22s" _end_ ":" _red_ "%04d" _end_ "][" _blu_ "%-24.24s" _end_ "] "
 
-#define dbug0(T,fmt)  if(T) printf( DEBUG_HEADER fmt, _file_, __LINE__, __FUNCTION__ )
+#define dbug0(T,fmt)  if(T) printf( DEBUG_HEADER fmt, __FILE__, __LINE__, __FUNCTION__ )
 #define dbug(T,fmt, args...)  if(T) printf( DEBUG_HEADER fmt, __FILE__, __LINE__, __FUNCTION__, ##args)
 
 #define BUFSIZ 	128
@@ -67,13 +67,19 @@ int rcvStart, rcvEnd, rcvCnt;
 char sndBuf[BUFSIZ] = {0,};
 int sndStart, sndEnd, toSndCnt;
 
+typedef struct {
+	uint8_t cmdType;
+	uint8_t command;
+
+} CMD;
+
 uint8_t bufFull;
 
 TaskHandle_t hTaskUsart3Rx;
-TaskHandle_t hTaskUsart3Tx;
+TaskHandle_t hTaskCmdWorker;
 
 const char *taskRxName = "UART3-RX Handler";
-const char *taskTxName = "UART3-TX Handler";
+const char *taskWorkerName = "Command-Worker";
 
 /* USER CODE END PV */
 
@@ -111,19 +117,38 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 	  else {
 		  bufFull = 1;
 	  }
+
 	  HAL_UART_Receive_IT(&huart3, &rcvChar, 1);
 	  rcvBuf[rcvEnd] = rcvChar;
+	  rcvCnt++;
   }
 }
 
 uint8_t GetRcvChar(uint8 *ecode)
 {
 	uint8_t rCh;
+
 	*ecode = 0;
-	if (rcvStart == BUFSIZ-1) {
-		rCh = rcvBuf[rcvStart];
-		rcvStart = 0;
+	if (rcvCnt == 0) {
+		*ecode = -1;
+		return 0;
 	}
+
+	if (rcvCnt == 1) {
+		rCh = rcvBuf[rcvStart];
+		rcvStart = rcvEnd = -1;
+	}
+	else {
+		if (rcvStart == BUFSIZ-1) {
+			rCh = rcvBuf[rcvStart];
+			rcvStart = 0;
+		}
+		else {
+			rCh = rcvBuf[rcvStart++];
+		}
+	}
+	rcvCnt--;
+
 	return rCh;
 }
 
@@ -163,9 +188,15 @@ uint16_t GetRcvLine(uint8_t *pBuf, uint16_t *len)
 		ch = GetRcvChar(&ecode);
 	}
 	*len = i;
+
 	return 0;
 }
 
+uint16_t parseCmdLine(uint8_t lineCmd, )
+{
+
+	return 0;
+}
 
 //void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 //{
@@ -197,48 +228,70 @@ void Uart3Send(UART_HandleTypeDef *huart, uint8_t *data, uint16_t len)
 
 void vTaskUart3RxCmdHandler(void *pvParam)
 {
+	uint16_t err;
 	uint8_t line[64];
+	CMD CmdData;
+	uint8_t cmdType, command;
 
 	const char *pchTaskParam = (char*)pvParam;
 
 	dbug(1, "Task Name: %s\n", pchTaskParam );
 
 	bufFull = 0;
+	rcvStart = rcvEnd = -1;   // 함수화
 	HAL_UART_Receive_IT(&huart3, &rcvChar, 1);
 
 	while (1)
 	{
-	    /* USER CODE END WHILE */
 		memset(line, 0, siz=sizeof(line));
-		if (GetRcvLine(line, &siz) == OK)
-			HAL_UART_Transmit(&huart3, line, siz, 10);
+		if ((err = GetRcvLine(line, &siz)) == OK)  {
+			HAL_UART_Transmit(&huart3, line, siz, 10);  // TODO: 10을 define
+			err = parseCmdLine(line, &cmdData);
+			if (err == OK) {
+				cmdType = cmdData.cmdType;
+				command = cmdData.command;
+				switch (cmdType) {
+				case 'C':  // 모듈 명령
+					// message send to module process
+					break;
+				case 'M':  // 동작 제어
+					// message send to manager process
+					break;
+				case 'P':  // 폴링
+					// 응답 전송
+					break;
+				}
+			}
+			else {
+				dbg(1, "E-PARSECMDLINE:%d\n", err);
+			}
+		}
+		else {
+			dbg(1, "E-GETLINE:%d\n", err);
+		}
 
 		vTaskDelay(500);
-
-	    /* USER CODE BEGIN 3 */
 	}
 
 }
 
-//void vTaskUart3Tx(void *pvParam)
-//{
-//	const char *pchTaskParam = (char*)pvParam;
-//
-//	dbug(1, "Task Name: %s\n", pchTaskParam );
-//
-//	HAL_UART_Transmit_IT(&huart3, &sndBuf[--toSndCnt], 1);
-//
-//	while (1)
-//	{
-//	    /* USER CODE END WHILE */
-//
-//		//HAL_Delay(1000);
-//		vTaskDelay(500);
-//
-//	    /* USER CODE BEGIN 3 */
-//	}
-//
-//}
+
+
+void vTaskCmdWorker(void *pvParam)
+{
+	uint16_t err;
+
+
+	const char *pchTaskParam = (char*)pvParam;
+
+	dbug(1, "Task Name: %s\n", pchTaskParam );
+
+	while (1) {
+
+		vTaskDelay(500);
+	}
+
+}
 
 /* USER CODE END 0 */
 
@@ -293,8 +346,8 @@ int main(void)
 
   /* USER CODE BEGIN WHILE */
 
-  xTaskCreate(vTaskUart3RxCmdHandler, "vTaskUart3RxCmdHandler", 200, (void*)taskRxName, 1, &hTaskUsart3Rx);
-  //xTaskCreate(vTaskUart3Tx, "vTaskUart3Tx", 200, (void*)taskTxName, 1, &hTaskUsart3Tx);
+  xTaskCreate(vTaskUart3RxCmdHandler, "vTaskUart3RxCmdHandler", 200, (void*)taskRxName,     1, &hTaskUsart3Rx);
+  xTaskCreate(vTaskCmdWorker,         "vTaskCmdWorker",         200, (void*)taskWorkerName, 1, &hTaskCmdWorker);
   vTaskStartScheduler();
 
   while (1)
